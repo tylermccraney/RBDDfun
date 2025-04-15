@@ -1,0 +1,536 @@
+---
+title: "IDYear_2025-IDWeek_1"
+author: "Tyler McCraney"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+library(doParallel)
+library(tidyverse)
+library(RODBC)
+library(hms)
+library(cumstats)
+
+# import functions
+source(file="S:\\MSJM\\NEW_DATABASE\\RST_ENTRY\\RBDDfun.R")
+
+# set dates
+beginIDDate <- 
+  "2025-01-01"
+
+endIDDate <- 
+  "2025-01-07"
+
+IDYear <- 
+  2025
+
+IDWeek <- 
+  1
+
+# import data from MS Access
+# .path value below is default & doesn't need to be specified
+accdb <- 
+  ImportMsAccessDb(
+    .beginIDDate=beginIDDate, 
+    .endIDDate=endIDDate,
+    .path="S:\\MSJM\\NEW_DATABASE\\DoubleEntry_Database_be.accdb")
+
+# save query
+saveRDS(accdb, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\queries\\IDYear_", IDYear, "-IDWeek_", IDWeek, "-accdb.RDS"))
+
+# save standalone data and SampleID tables
+dat <- 
+  accdb$df
+
+glimpse(dat)
+
+SampleID <- 
+  accdb$SampleID
+
+SampleID
+
+# import trap efficiency generalized linear models
+GlmData <- 
+  read_csv(file="S:\\MSJM\\NEW_DATABASE\\RST_ENTRY\\Td44glm188.csv")
+
+GlmData
+
+# QC
+# verify no compromised SampleID (should be zero)
+filter(dat, !grepl(pattern="\\d{1,3}_\\d{2}", SampleID)) |> nrow()
+
+# check to make sure there aren't any unusual RST deployments (e.g., Gate 5 West, Gate 5 East)
+# output shows the number of observations (i.e., fish) recorded from each gate
+table(dat$StationCode, useNA="ifany") |> rev()
+
+# verify QA was done
+# should only output "Finalized"
+table(dat$QaDone, useNA="ifany")
+
+# verify no missing Q_SID (missing indicated by "NA")
+filter(dat, is.na(Q_SID)) |> 
+  distinct(IDDate, SampleID, Q_SID) |> 
+  arrange(IDDate) %>% 
+  print(n=nrow(.))
+
+# verify no missing Acre_feet (Xd; missing indicated by "NA", typically results
+# from failure to tab through all fields in data entry form)
+filter(dat, is.na(Acre_feet)) |> 
+  distinct(IDDate, SampleID, Acre_feet) |> 
+  arrange(IDDate) %>% 
+  print(n=nrow(.))
+
+# visually asses Acre_feet (Xd) to check for anomalies that may indicate data entry errors
+distinct(dat, IDDate, SampleID, StationCode, Acre_feet, TrapSampleType, GearID) |> 
+  right_join(y=SampleID) |> 
+  complete(IDDate, StationCode) |> 
+  arrange(IDDate) |> 
+  filter(!is.na(StationCode)) |>
+  mutate(StationCode=factor(StationCode) |> fct_rev()) |>
+  ggplot(mapping=aes(x=IDDate, y=Acre_feet, color=GearID, shape=GearID)) + 
+  geom_point() + 
+  geom_line() +
+  scale_x_date(date_breaks="day", minor_breaks=NULL) + 
+  theme(axis.text.x.bottom=element_text(angle=90, vjust=0.5)) +
+  facet_wrap(facets=vars(StationCode), ncol=1)
+
+# Velocity
+distinct(dat, IDDate, SampleID, StationCode, Velocity, TrapSampleType, GearID) |> 
+  right_join(y=SampleID) |> 
+  complete(IDDate, StationCode) |> 
+  arrange(IDDate) |> 
+  filter(!is.na(StationCode)) |>
+  mutate(StationCode=factor(StationCode) |> fct_rev()) |>
+  ggplot(mapping=aes(x=IDDate, y=Velocity, color=GearID, shape=GearID)) + 
+  geom_point() + 
+  geom_line() +
+  scale_x_date(date_breaks="day", minor_breaks=NULL) + 
+  theme(axis.text.x.bottom=element_text(angle=90, vjust=0.5)) +
+  facet_wrap(facets=vars(StationCode), ncol=1)
+
+# visualize # of traps fished per SampleID & TrapSampleType (e.g., SS)
+distinct(dat, IDDate, SampleID, StationCode, SampleTime, TrapSampleType) |> 
+  group_by(IDDate, SampleID, TrapSampleType) |> 
+  summarise(TrapSamples=n()) |> 
+  ggplot(mapping=aes(x=IDDate, y=TrapSamples, fill=TrapSampleType)) +
+  geom_col() +
+  scale_x_date(date_breaks="day", minor_breaks=NULL) +
+  scale_y_continuous(breaks=1:10) +
+  theme(axis.text.x.bottom=element_text(angle=90, vjust=0.5))
+
+# fry/smolt proportions
+# unmarked "wild"
+PropCdFrySmolt <- 
+  estimatePropCdFrySmolt(.df=dat, .beginIDDate=beginIDDate, .endIDDate=endIDDate)
+
+PropCdFrySmolt
+
+# estimate daily passage w/ glm
+# unmarked "wild"
+Pd <- 
+  estimatePdglm(
+    .df=dat,
+    .beginIDDate=beginIDDate, 
+    .endIDDate=endIDDate, 
+    .unmarked=TRUE, # default setting 
+    .GlmData=GlmData,
+    .bootModel="na", # don't change
+    .return="Pd")
+
+Pd
+
+# effort per-trap (for plotting, etc.)
+Qdi <- 
+  estimatePdglm(
+    .df=dat,
+    .beginIDDate=beginIDDate, 
+    .endIDDate=endIDDate, 
+    .unmarked=TRUE, # default setting 
+    .GlmData=GlmData,
+    .bootModel="na", # don't change
+    .return="Qdi")
+
+Qdi
+
+# create nested data frame to pass to WeeklyPhat
+PhatByWeek <- 
+  tibble(
+    Pd=list(Pd), # daily passage results from estimatePdglm()
+    IDYear=IDYear,
+    IDWeek=IDWeek,
+    MSTModel="Td44", # GLM Td44
+    OrganismCode=c(rep("CHN", 4), "RBT"), 
+    race=c("W", "S", "F", "L", "n/p")) 
+
+PhatByWeek
+
+# apply WeeklyPhat function to nested data frame
+PhatByWeek <- 
+  bind_cols(
+    select(PhatByWeek, -Pd),
+    unnest_wider(
+      transmute(
+        select(PhatByWeek, -MSTModel), 
+        Phat=pmap(
+          select(PhatByWeek, -MSTModel), 
+          \(Pd, IDYear, IDWeek, OrganismCode, race) 
+          WeeklyPhat(
+            .Pd=Pd, 
+            .SampleID=SampleID,
+            .propFrySmolt=PropCdFrySmolt,
+            .IDYear=IDYear, 
+            .IDWeek=IDWeek, 
+            .OrganismCode=OrganismCode, 
+            .race=race))), 
+      col=Phat))
+
+PhatByWeek
+
+# bootstrap CIs
+cores <- 
+  detectCores()
+
+cl <- 
+  makeCluster(round(cores/2))
+
+registerDoParallel(cl)
+
+t1 <- 
+  Sys.time()
+
+#WCS
+WCS <- 
+  foreach(icount(5000), .combine=bind_rows, .multicombine=TRUE) %dopar% 
+  bootWeeklyPhatglm(
+    .df=dat, 
+    .SampleID=SampleID, 
+    .propFrySmolt=PropCdFrySmolt, 
+    .IDYear=IDYear,
+    .IDWeek=IDWeek,
+    .OrganismCode="CHN", 
+    .race="W", 
+    .GlmData=GlmData, 
+    .bootModel="parametric")
+
+WCS
+
+saveRDS(object=WCS, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\bootstraps\\WCS-IDYear_", IDYear, "-IDWeek_", IDWeek, "-Td44glm-parametricboots.RDS"))
+
+#SCS
+SCS <- 
+  foreach(icount(5000), .combine=bind_rows, .multicombine=TRUE) %dopar% 
+  bootWeeklyPhatglm(
+    .df=dat, 
+    .SampleID=SampleID, 
+    .propFrySmolt=PropCdFrySmolt, 
+    .IDYear=IDYear,
+    .IDWeek=IDWeek,
+    .OrganismCode="CHN", 
+    .race="S", 
+    .GlmData=GlmData, 
+    .bootModel="parametric")
+
+SCS
+
+saveRDS(object=SCS, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\bootstraps\\SCS-IDYear_", IDYear, "-IDWeek_", IDWeek, "-Td44glm-parametricboots.RDS"))
+
+#FCS
+FCS <- 
+  foreach(icount(5000), .combine=bind_rows, .multicombine=TRUE) %dopar% 
+  bootWeeklyPhatglm(
+    .df=dat, 
+    .SampleID=SampleID, 
+    .propFrySmolt=PropCdFrySmolt, 
+    .IDYear=IDYear,
+    .IDWeek=IDWeek,
+    .OrganismCode="CHN", 
+    .race="F", 
+    .GlmData=GlmData, 
+    .bootModel="parametric")
+
+FCS
+
+saveRDS(object=FCS, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\bootstraps\\FCS-IDYear_", IDYear, "-IDWeek_", IDWeek, "-Td44glm-parametricboots.RDS"))
+
+#LCS
+LCS <- 
+  foreach(icount(5000), .combine=bind_rows, .multicombine=TRUE) %dopar% 
+  bootWeeklyPhatglm(
+    .df=dat, 
+    .SampleID=SampleID, 
+    .propFrySmolt=PropCdFrySmolt, 
+    .IDYear=IDYear,
+    .IDWeek=IDWeek,
+    .OrganismCode="CHN", 
+    .race="L", 
+    .GlmData=GlmData, 
+    .bootModel="parametric")
+
+LCS
+
+saveRDS(object=LCS, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\bootstraps\\LCS-IDYear_", IDYear, "-IDWeek_", IDWeek, "-Td44glm-parametricboots.RDS"))
+
+# RBT
+RBT <- 
+  foreach(icount(5000), .combine=bind_rows, .multicombine=TRUE) %dopar% 
+  bootWeeklyPhatglm(
+    .df=dat, 
+    .SampleID=SampleID, 
+    .propFrySmolt=PropCdFrySmolt, 
+    .IDYear=IDYear,
+    .IDWeek=IDWeek,
+    .OrganismCode="RBT", 
+    .race="n/p", 
+    .GlmData=GlmData, 
+    .bootModel="parametric")
+
+RBT
+
+saveRDS(object=RBT, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\bootstraps\\RBT-IDYear_", IDYear, "-IDWeek_", IDWeek, "-Td44glm-parametricboots.RDS"))
+
+stopCluster(cl)
+
+Sys.time()-t1 # time to complete 5k bootstraps in parallel
+
+# estimate 95% CIs
+#### WCS
+WCS <- 
+  mutate(WCS, B=1:5000)
+
+# assess number of bootstraps
+WCS <- 
+  mutate(
+    WCS, 
+    IDWeek=IDWeek,
+    `Phat*cum2.5`=cumquant(`Phat*`, p=0.025) |> round(), 
+    `Phat*cum97.5`=cumquant(`Phat*`, p=0.975) |> round(), 
+    `Phat*cumwidth95`=`Phat*cum97.5`-`Phat*cum2.5`)
+
+ggplot(WCS, aes(x=B, y=`Phat*cumwidth95`)) + 
+  geom_step() + 
+  labs(x="Bootstrap replicate", y="Width of 95% CI", title="Line should stabilize", tag="WCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#
+WCS_CIs <- 
+  bind_rows(
+    list(
+      Td44=group_by(WCS, IDWeek) |>
+        reframe(
+          `Phat*`=quantile(`Phat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `FryPhat*`=quantile(`FryPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `SmoltPhat*`=quantile(`SmoltPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round()) |>
+        mutate(CI=c("2.5%", "97.5%"), IDYear=IDYear, OrganismCode="CHN", race="W") |>
+        pivot_wider(names_from=CI, names_sep="", values_from=c(`Phat*`, `FryPhat*`, `SmoltPhat*`))),
+    .id="MSTModel")
+
+# visualize bootstrap distribution & 95% CIs
+ggplot(WCS, aes(x=`Phat*`)) + 
+  geom_histogram() + 
+  geom_vline(xintercept=c(WCS_CIs$`Phat*2.5%`, WCS_CIs$`Phat*97.5%`), color="blue") +
+  labs(
+    x=expression(italic(hat(P))*`*`), 
+    title="Bootstrap distribution should appear smooth & symmetric", 
+    tag="WCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#### SCS
+SCS <- 
+  mutate(SCS, B=1:5000)
+
+# assess number of bootstraps
+SCS <- 
+  mutate(
+    SCS, 
+    IDWeek=IDWeek,
+    `Phat*cum2.5`=cumquant(`Phat*`, p=0.025) |> round(), 
+    `Phat*cum97.5`=cumquant(`Phat*`, p=0.975) |> round(), 
+    `Phat*cumwidth95`=`Phat*cum97.5`-`Phat*cum2.5`)
+
+ggplot(SCS, aes(x=B, y=`Phat*cumwidth95`)) + 
+  geom_step() + 
+  labs(x="Bootstrap replicate", y="Width of 95% CI", title="Line should stabilize", tag="SCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#
+SCS_CIs <- 
+  bind_rows(
+    list(
+      Td44=group_by(SCS, IDWeek) |>
+        reframe(
+          `Phat*`=quantile(`Phat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `FryPhat*`=quantile(`FryPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `SmoltPhat*`=quantile(`SmoltPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round()) |>
+        mutate(CI=c("2.5%", "97.5%"), IDYear=IDYear, OrganismCode="CHN", race="S") |>
+        pivot_wider(names_from=CI, names_sep="", values_from=c(`Phat*`, `FryPhat*`, `SmoltPhat*`))),
+    .id="MSTModel")
+
+# visualize bootstrap distribution & 95% CIs
+ggplot(SCS, aes(x=`Phat*`)) + 
+  geom_histogram() + 
+  geom_vline(xintercept=c(SCS_CIs$`Phat*2.5%`, SCS_CIs$`Phat*97.5%`), color="blue") +
+  labs(
+    x=expression(italic(hat(P))*`*`), 
+    title="Bootstrap distribution should appear smooth & symmetric", 
+    tag="SCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#### FCS
+FCS <- 
+  mutate(FCS, B=1:5000)
+
+# assess number of bootstraps
+FCS <- 
+  mutate(
+    FCS, 
+    IDWeek=IDWeek,
+    `Phat*cum2.5`=cumquant(`Phat*`, p=0.025) |> round(), 
+    `Phat*cum97.5`=cumquant(`Phat*`, p=0.975) |> round(), 
+    `Phat*cumwidth95`=`Phat*cum97.5`-`Phat*cum2.5`)
+
+ggplot(FCS, aes(x=B, y=`Phat*cumwidth95`)) + 
+  geom_step() + 
+  labs(x="Bootstrap replicate", y="Width of 95% CI", title="Line should stabilize", tag="FCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#
+FCS_CIs <- 
+  bind_rows(
+    list(
+      Td44=group_by(FCS, IDWeek) |>
+        reframe(
+          `Phat*`=quantile(`Phat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `FryPhat*`=quantile(`FryPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `SmoltPhat*`=quantile(`SmoltPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round()) |>
+        mutate(CI=c("2.5%", "97.5%"), IDYear=IDYear, OrganismCode="CHN", race="F") |>
+        pivot_wider(names_from=CI, names_sep="", values_from=c(`Phat*`, `FryPhat*`, `SmoltPhat*`))),
+    .id="MSTModel")
+
+# visualize bootstrap distribution & 95% CIs
+ggplot(FCS, aes(x=`Phat*`)) + 
+  geom_histogram() + 
+  geom_vline(xintercept=c(FCS_CIs$`Phat*2.5%`, FCS_CIs$`Phat*97.5%`), color="blue") +
+  labs(
+    x=expression(italic(hat(P))*`*`), 
+    title="Bootstrap distribution should appear smooth & symmetric", 
+    tag="FCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#### LCS
+LCS <- 
+  mutate(LCS, B=1:5000)
+
+# assess number of bootstraps
+LCS <- 
+  mutate(
+    LCS, 
+    IDWeek=IDWeek,
+    `Phat*cum2.5`=cumquant(`Phat*`, p=0.025) |> round(), 
+    `Phat*cum97.5`=cumquant(`Phat*`, p=0.975) |> round(), 
+    `Phat*cumwidth95`=`Phat*cum97.5`-`Phat*cum2.5`)
+
+ggplot(LCS, aes(x=B, y=`Phat*cumwidth95`)) + 
+  geom_step() + 
+  labs(x="Bootstrap replicate", y="Width of 95% CI", title="Line should stabilize", tag="LCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#
+LCS_CIs <- 
+  bind_rows(
+    list(
+      Td44=group_by(LCS, IDWeek) |>
+        reframe(
+          `Phat*`=quantile(`Phat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `FryPhat*`=quantile(`FryPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `SmoltPhat*`=quantile(`SmoltPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round()) |>
+        mutate(CI=c("2.5%", "97.5%"), IDYear=IDYear, OrganismCode="CHN", race="L") |>
+        pivot_wider(names_from=CI, names_sep="", values_from=c(`Phat*`, `FryPhat*`, `SmoltPhat*`))),
+    .id="MSTModel")
+
+# visualize bootstrap distribution & 95% CIs
+ggplot(LCS, aes(x=`Phat*`)) + 
+  geom_histogram() + 
+  geom_vline(xintercept=c(LCS_CIs$`Phat*2.5%`, LCS_CIs$`Phat*97.5%`), color="blue") +
+  labs(
+    x=expression(italic(hat(P))*`*`), 
+    title="Bootstrap distribution should appear smooth & symmetric", 
+    tag="LCS") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#### RBT
+RBT <- 
+  mutate(RBT, B=1:5000)
+
+# assess number of bootstraps
+RBT <- 
+  mutate(
+    RBT, 
+    IDWeek=IDWeek,
+    `Phat*cum2.5`=cumquant(`Phat*`, p=0.025) |> round(), 
+    `Phat*cum97.5`=cumquant(`Phat*`, p=0.975) |> round(), 
+    `Phat*cumwidth95`=`Phat*cum97.5`-`Phat*cum2.5`)
+
+ggplot(RBT, aes(x=B, y=`Phat*cumwidth95`)) + 
+  geom_step() + 
+  labs(x="Bootstrap replicate", y="Width of 95% CI", title="Line should stabilize", tag="RBT") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+#
+RBT_CIs <- 
+  bind_rows(
+    list(
+      Td44=group_by(RBT, IDWeek) |>
+        reframe(
+          `Phat*`=quantile(`Phat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `FryPhat*`=quantile(`FryPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round(), 
+          `SmoltPhat*`=quantile(`SmoltPhat*`, probs=c(0.025, 0.975), na.rm=TRUE) |> round()) |>
+        mutate(CI=c("2.5%", "97.5%"), IDYear=IDYear, OrganismCode="RBT", race="n/p") |>
+        pivot_wider(names_from=CI, names_sep="", values_from=c(`Phat*`, `FryPhat*`, `SmoltPhat*`))),
+    .id="MSTModel")
+
+# visualize bootstrap distribution & 95% CIs
+ggplot(RBT, aes(x=`Phat*`)) + 
+  geom_histogram() + 
+  geom_vline(xintercept=c(RBT_CIs$`Phat*2.5%`, RBT_CIs$`Phat*97.5%`), color="blue") +
+  labs(
+    x=expression(italic(hat(P))*`*`), 
+    title="Bootstrap distribution should appear smooth & symmetric", 
+    tag="RBT") + 
+  theme(plot.title=element_text(hjust=0.5))
+
+# view/save results
+# %Qdi
+PercQdi <- 
+  left_join(x=Qdi, y=distinct(dat, IDDate, SampleTime, SampleDate)) |>
+  relocate(IDDate, SampleDate, SampleTime, StationCode, Xdi, Qd, PercQdi) |>
+  arrange(IDDate, StationCode, SampleDate, SampleTime)
+
+PercQdi
+
+write_csv(PercQdi, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\IDYear_", IDYear, "-IDWeek_", IDWeek, "-PercQdi.csv"))
+
+# daily passage (Pd)
+Pd <- 
+  select(Pd, -PercQd, -cvFL) |> 
+  relocate(Td, .after=Cd) |> 
+  mutate(meanFL=round(meanFL, digits=1), sdFL=round(sdFL, digits=1))
+
+Pd
+
+write_csv(`Pd`, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\IDYear_", IDYear, "-IDWeek_", IDWeek, "-Pd.csv"))
+
+# weekly passage (P) w/ 95% CIs
+`P-CIs` <- 
+  full_join(x=PhatByWeek, y=bind_rows(WCS_CIs, SCS_CIs, FCS_CIs, LCS_CIs, RBT_CIs)) |> 
+  select(IDYear, IDWeek, OrganismCode, race, P=Phat, L95=`Phat*2.5%`, U95=`Phat*97.5%`)
+
+`P-CIs`
+
+write_csv(`P-CIs`, file=paste0("S:\\MSJM\\Data_Archive\\Passage\\R\\CY", IDYear, "\\IDYear_", IDYear, "-IDWeek_", IDWeek, "-P-CIs.csv"))
+```
