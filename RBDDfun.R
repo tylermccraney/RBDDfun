@@ -708,35 +708,101 @@ bootWeeklyPhat <-
 DischargeCFS <- 
   function(
     .beginIDDate,  ## YYYY-MM-DD 
-    .endIDDate,  ## YYYY-MM-DD
-    .statistic=c("mean", "max")
+    .endIDDate  ## YYYY-MM-DD
   ){
     require(rvest) 
-    require(tidyverse) 
-    statistic <- match.arg(.statistic)
-    Start <- date(.beginIDDate)-1
+    require(tidyverse)
+    TimeZoneStart <- 
+      as_datetime(paste(.beginIDDate, "07:00:00"), tz="US/Pacific") |> 
+      format(format="%Z")
+    TimeZoneEnd <- 
+      as_datetime(paste(.endIDDate, "07:00:00"), tz="US/Pacific") |> 
+      format(format="%Z")
+    if(TimeZoneStart=="PDT"){HourStart <- "08"}
+    if(TimeZoneStart=="PST"){HourStart <- "07"}
+    if(TimeZoneEnd=="PDT"){HourEnd <- "08"}
+    if(TimeZoneEnd=="PST"){HourEnd <- "07"}
+    Start <- date(.beginIDDate) - 1
     End <- date(.endIDDate)
     FlowsURL <- 
       paste0(
         "https://cdec.water.ca.gov/dynamicapp/selectQuery?Stations=BND&SensorNums=20&dur_code=H&Start=", 
         Start, 
-        "T07%3A00&End=", 
+        "T", 
+        HourStart, 
+        "%3A00&End=", 
         End, 
-        "T07%22") 
+        "T",
+        HourEnd,
+        "%22") 
     FlowsHTML <- read_html(FlowsURL)
     FlowsTable <- FlowsHTML |> html_nodes("table") %>% .[[2]] 
     FlowsTibble <- 
       FlowsTable |> 
       html_table() |> 
       select(SampleDateTime=1, FlowCFS=2) |> 
+      filter(FlowCFS!="--") |>
       mutate(
         SampleDateTime=mdy_hm(SampleDateTime, tz="US/Pacific"), 
         SampleDate=date(SampleDateTime), 
         SampleTime=hour(SampleDateTime), 
         IDDate=if_else(SampleTime%in%8:23, true=SampleDate+1, false=SampleDate),
         FlowCFS=str_remove_all(string=FlowCFS, pattern=",") |> as.numeric()) 
-    if(statistic=="mean"){
-      FlowCFS <- group_by(FlowsTibble, IDDate) |> summarise(AvgDischargeCFS=mean(FlowCFS, na.rm=TRUE) |> round())}
-    if(statistic=="max"){
-      FlowCFS <- group_by(FlowsTibble, IDDate) |> summarise(PeakDischargeCFS=max(FlowCFS, na.rm=TRUE) |> round())}
+    FlowCFS <- 
+      group_by(FlowsTibble, IDDate) |> 
+      summarise(
+        AvgDischargeCFS=mean(FlowCFS, na.rm=TRUE) |> round(), 
+        PeakDischargeCFS=max(FlowCFS, na.rm=TRUE) |> round())
+    return(FlowCFS)}
+
+# function to scrape flow data from CDEC and calculate mean discharge for 1st day of a trap efficiency trial
+ReleaseRecaptureCFS <- 
+  function(
+    .ReleaseDate,  ## "YYYY-MM-DD" 
+    .ReleaseTime,  ## "HH:MM:SS"
+  ){
+    require(rvest) 
+    require(tidyverse) 
+    require(hms)
+    Start <- date(.ReleaseDate)
+    End <- Start + 1
+    TimeZoneStart <- 
+      as_datetime(paste(Start, .ReleaseTime), tz="US/Pacific") |> 
+      format(format="%Z")
+    TimeZoneEnd <- 
+      as_datetime(paste(End, "07:00:00"), tz="US/Pacific") |> 
+      format(format="%Z")
+    if(TimeZoneStart=="PDT"){HourStart <- as_hms(.ReleaseTime) |> hour()}
+    if(TimeZoneStart=="PST"){HourStart <- as_hms(.ReleaseTime) |> hour() - 1}
+    if(TimeZoneEnd=="PDT"){HourEnd <- "08"}
+    if(TimeZoneEnd=="PST"){HourEnd <- "07"}
+    FlowsURL <- 
+      paste0(
+        "https://cdec.water.ca.gov/dynamicapp/selectQuery?Stations=BND&SensorNums=20&dur_code=H&Start=", 
+        Start, 
+        "T", 
+        HourStart, 
+        "%3A00&End=", 
+        End, 
+        "T",
+        HourEnd,
+        "%22") 
+    FlowsHTML <- read_html(FlowsURL)
+    FlowsTable <- FlowsHTML |> html_nodes("table") %>% .[[2]] 
+    FlowsTibble <- 
+      FlowsTable |> 
+      html_table() |> 
+      select(SampleDateTime=1, FlowCFS=2) |> 
+      filter(FlowCFS!="--") |>
+      mutate(
+        SampleDateTime=mdy_hm(SampleDateTime, tz="US/Pacific"), 
+        SampleDate=date(SampleDateTime), 
+        SampleTime=hour(SampleDateTime), 
+        IDDate=if_else(SampleTime%in%8:23, true=SampleDate+1, false=SampleDate),
+        FlowCFS=str_remove_all(string=FlowCFS, pattern=",") |> as.numeric()) 
+    FlowCFS <- 
+      group_by(FlowsTibble, IDDate) |> 
+      summarise(AvgDischargeCFS=mean(FlowCFS, na.rm=TRUE) |> round()) |> 
+      mutate(ReleaseDate=date(.ReleaseDate), ReleaseTime=as_hms(.ReleaseTime)) |>
+      relocate(ReleaseDate, ReleaseTime, .after=IDDate)
     return(FlowCFS)}
