@@ -759,7 +759,7 @@ DischargeCFS <-
 ReleaseRecaptureCFS <- 
   function(
     .ReleaseDate,  ## "YYYY-MM-DD" 
-    .ReleaseTime,  ## "HH:MM:SS"
+    .ReleaseTime  ## "HH:MM:SS"
   ){
     require(rvest) 
     require(tidyverse) 
