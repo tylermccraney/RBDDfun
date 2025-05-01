@@ -450,7 +450,7 @@ estimatePropCdFrySmolt <-
       group_by(IDDate, OrganismCode, race, Juvenile) |> 
       summarize(Cd=sum(Cdi)) |> 
       ungroup() |> 
-      pivot_wider(names_from=Juvenile, values_from=Cd, names_prefix="Cd") |>
+      pivot_wider(names_from=Juvenile, values_from=Cd, names_prefix="Cd", names_expand=TRUE) |>
       replace_na(list(CdFry=0, CdSmolt=0)) |>
       mutate(PropCdFry=CdFry/(CdFry+CdSmolt), PropCdSmolt=CdSmolt/(CdFry+CdSmolt)) |>
       select(-CdSmolt, -CdFry)
