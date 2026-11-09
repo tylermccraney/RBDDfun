@@ -31,7 +31,7 @@ REpriors <-
 
 
 # to change to sum coding
-options(contrasts=c('contr.sum','contr.sum'))
+# options(contrasts=c('contr.sum','contr.sum'))
 
 t44n188re <-
   brm(
@@ -51,7 +51,10 @@ t44n188re <-
 
 
 # check to make sure there aren't any non-standard RST deployments e.g., Gate 5 West & Gate 5 East
-table(dat$StationCode, useNA="ifany") # Bayesian glm allows non-standard RST deployments. The predictions will be on the grand mean with uncertainty drawn from group means
+table(dat$StationCode, useNA="ifany") 
+
+# The Bayesian framework allows non-standard RST deployments. 
+# The predictions will be on the grand mean with uncertainty drawn from group means
 
 
 BayesianPd1glm <- 
@@ -218,3 +221,5 @@ write_csv(Pd$Pd, file="Bayesian/IDYear_2025-IDWeek_1-Pd.csv")
 write_csv(Pd$Qdi, file="Bayesian/IDYear_2025-IDWeek_1-PercQdi.csv")
 
 write_csv(Pd$PdDraws, file="Bayesian/IDYear_2025-IDWeek_1-PdDraws.csv")
+
+# weekly/monthly/yearly estimates can be constructed from PdDraws
